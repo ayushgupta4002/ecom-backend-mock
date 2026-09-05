@@ -1,0 +1,11 @@
+# Local environment configuration (contains connection strings).
+# .env.example is committed as the documented template.
+.env
+
+# Build output
+/server
+/bin/
+
+# Go test/coverage artifacts
+*.test
+*.out
