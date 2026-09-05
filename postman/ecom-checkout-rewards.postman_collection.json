@@ -1,0 +1,3001 @@
+{
+  "info": {
+    "_postman_id": "4b97eeb0-da4c-4600-8e71-744927a85090",
+    "name": "Ecom - Checkout & Rewards Service",
+    "description": "Full API collection for the Go/Postgres checkout and rewards service.\n\n**Setup**: start the service with `make up && make run` (listens on :8080), then import the\n`Ecom - Local` environment or rely on the collection variables below.\n\n**Money**: every amount is integer PAISE (1 rupee = 100 paise). Rs 899.00 is 89900.\n\n**Rewards are per user**: every n of a *user's own* orders earns *that user* one coupon,\nredeemable only by them.\n\n**Suggested order**: run folders 00 -> 07 top to bottom. Requests chain through collection\nvariables (cartId, orderId, couponCode) which are set automatically by test scripts.\n\n**Concurrency**: Postman is a poor fit for proving race behaviour. The real proof is the Go\ntest suite (`make test`) - concurrent checkouts on limited stock, concurrent redemption of one\ncoupon, concurrent admin coupon generation, and retried checkouts. To get a feel for it here,\nrun the collection with newman in several parallel processes.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080",
+      "description": "Service base URL"
+    },
+    {
+      "key": "userId",
+      "value": "1",
+      "description": "Aarav Sharma (seeded)"
+    },
+    {
+      "key": "userId2",
+      "value": "2",
+      "description": "Priya Iyer (seeded)"
+    },
+    {
+      "key": "userId3",
+      "value": "3",
+      "description": "Rohan Gupta (seeded)"
+    },
+    {
+      "key": "productId",
+      "value": "1",
+      "description": "Wireless Mouse, 89900 paise"
+    },
+    {
+      "key": "limitedProductId",
+      "value": "5",
+      "description": "Limited Edition Webcam, only 3 in stock"
+    },
+    {
+      "key": "cartId",
+      "value": "",
+      "description": "Set automatically by 'Create cart'"
+    },
+    {
+      "key": "emptyCartId",
+      "value": "",
+      "description": "Set automatically in folder 07"
+    },
+    {
+      "key": "errCartId",
+      "value": "",
+      "description": "Set automatically in folder 07"
+    },
+    {
+      "key": "ordersRemaining",
+      "value": "",
+      "description": "Internal: drives the folder-05 order loop"
+    },
+    {
+      "key": "couponPercent",
+      "value": "",
+      "description": "Set automatically; the discount the resolved coupon carries"
+    },
+    {
+      "key": "otherCartId",
+      "value": "",
+      "description": "Set automatically in folder 07"
+    },
+    {
+      "key": "orderId",
+      "value": "",
+      "description": "Set automatically by 'Checkout'"
+    },
+    {
+      "key": "couponCode",
+      "value": "",
+      "description": "Set automatically by 'Generate coupon'"
+    },
+    {
+      "key": "discoveredUserId",
+      "value": "",
+      "description": "Set automatically by 'List users'"
+    },
+    {
+      "key": "lastReport",
+      "value": "",
+      "description": "Internal: used to assert the report is a pure read"
+    },
+    {
+      "key": "providerRef",
+      "value": "",
+      "description": "Set automatically at checkout; the payment webhook key"
+    },
+    {
+      "key": "failCartId",
+      "value": "",
+      "description": ""
+    },
+    {
+      "key": "cancelCartId",
+      "value": "",
+      "description": ""
+    },
+    {
+      "key": "cancelOrderId",
+      "value": "",
+      "description": ""
+    },
+    {
+      "key": "stockBefore",
+      "value": "",
+      "description": ""
+    },
+    {
+      "key": "promoCode",
+      "value": "DIWALI15",
+      "description": "Global promo code created in folder 06"
+    },
+    {
+      "key": "globalCode",
+      "value": "",
+      "description": "Set automatically"
+    },
+    {
+      "key": "promoCartId",
+      "value": "",
+      "description": "Set automatically"
+    }
+  ],
+  "item": [
+    {
+      "name": "00 Health",
+      "description": "Liveness check.",
+      "item": [
+        {
+          "name": "Health check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/healthz",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "healthz"
+              ]
+            },
+            "description": "Returns {\"status\":\"ok\"} when the service is up."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('status ok', () => pm.expect(pm.response.json().status).to.eql('ok'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "01 Users",
+      "description": "Customers and their per-user reward progress. Auth is out of scope, so the client asserts user_id.",
+      "item": [
+        {
+          "name": "List users",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/users",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "users"
+              ]
+            },
+            "description": "Lists the 3 seeded customers. Handy for grabbing a user_id."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const users = pm.response.json();",
+                  "pm.test('seeded users present', () => pm.expect(users.length).to.be.at.least(3));",
+                  "// Pin the first user into a variable if you want to use a fresh one",
+                  "if (users.length) pm.collectionVariables.set('discoveredUserId', users[0].id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get user",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/users/{{userId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "users",
+                "{{userId}}"
+              ]
+            },
+            "description": "One user, including their own successful order count."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('has order count', () => pm.expect(pm.response.json()).to.have.property('successful_order_count'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get user reward progress",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/users/{{userId}}/rewards",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "users",
+                "{{userId}}",
+                "rewards"
+              ]
+            },
+            "description": "This user's milestone progress and the coupons they own. Read-only and safe to poll. Reward coupons are minted automatically at the milestone, so coupons_generated tracks milestones_reached."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const s = pm.response.json().status;",
+                  "pm.test('progress is coherent', () => {",
+                  "  pm.expect(s.milestones_reached).to.eql(Math.floor(s.successful_order_count / s.milestone_every_n));",
+                  "  pm.expect(s.orders_until_next_milestone).to.be.at.least(1);",
+                  "});",
+                  "pm.test('rewards are minted automatically, so nothing is left pending', () => {",
+                  "  pm.expect(s.coupons_generated).to.eql(s.milestones_reached);",
+                  "});",
+                  "console.log(`paid orders=${s.successful_order_count} milestones=${s.milestones_reached} coupons=${s.coupons_generated}`);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "02 Products",
+      "description": "Catalog. Prices are integer paise (1 rupee = 100 paise).",
+      "item": [
+        {
+          "name": "List products",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/products",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products"
+              ]
+            },
+            "description": "All 5 seeded products. 'Limited Edition Webcam' has only 3 in stock."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('prices are integer paise', () => {",
+                  "  pm.response.json().forEach(p => pm.expect(Number.isInteger(p.price_paise)).to.be.true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get product",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/products/{{productId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "{{productId}}"
+              ]
+            },
+            "description": "Single product by id."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "03 Carts",
+      "description": "Cart lifecycle. Run these in order - 'Create cart' stores cartId for the rest.",
+      "item": [
+        {
+          "name": "Create cart",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts"
+              ]
+            },
+            "description": "Opens a cart owned by {{userId}}. Saves the new id into the cartId variable.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": {{userId}}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const cart = pm.response.json();",
+                  "pm.collectionVariables.set('cartId', cart.id);",
+                  "pm.test('cart is open and owned', () => {",
+                  "  pm.expect(cart.status).to.eql('open');",
+                  "  pm.expect(cart.user_id).to.eql(Number(pm.collectionVariables.get('userId')));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Add item",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts/{{cartId}}/items",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts",
+                "{{cartId}}",
+                "items"
+              ]
+            },
+            "description": "Adds a product. Adding one already in the cart returns 409 CONFLICT - use 'Update item quantity' instead.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"product_id\": {{productId}},\n  \"quantity\": 2\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const v = pm.response.json();",
+                  "pm.test('line total = price x qty', () => {",
+                  "  const item = v.cart.items[0];",
+                  "  pm.expect(item.line_total_paise).to.eql(item.current_unit_price_paise * item.quantity);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "View cart",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/carts/{{cartId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts",
+                "{{cartId}}"
+              ]
+            },
+            "description": "Cart with CURRENT prices/stock and a subtotal. Informational only - checkout re-resolves price and stock under a row lock."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const v = pm.response.json();",
+                  "pm.test('subtotal equals sum of lines', () => {",
+                  "  const sum = v.cart.items.reduce((t, i) => t + i.line_total_paise, 0);",
+                  "  pm.expect(v.subtotal_paise).to.eql(sum);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update item quantity",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts/{{cartId}}/items/{{productId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts",
+                "{{cartId}}",
+                "items",
+                "{{productId}}"
+              ]
+            },
+            "description": "Sets the ABSOLUTE quantity, so retrying is idempotent (unlike an incrementing add).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"quantity\": 3\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('quantity is exactly 3', () => {",
+                  "  pm.expect(pm.response.json().cart.items[0].quantity).to.eql(3);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Remove item",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/carts/{{cartId}}/items/{{productId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts",
+                "{{cartId}}",
+                "items",
+                "{{productId}}"
+              ]
+            },
+            "description": "Removes the line. 404 if it is not in the cart."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "04 Checkout and orders",
+      "description": "Checkout and the idempotent retry. Re-run 'Create cart' + 'Add item' first if you removed the item above.",
+      "item": [
+        {
+          "name": "Create cart (for checkout)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts"
+              ]
+            },
+            "description": "Fresh cart so the checkout below has something to buy.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": {{userId}}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('cartId', pm.response.json().id);",
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Add item (for checkout)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts/{{cartId}}/items",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts",
+                "{{cartId}}",
+                "items"
+              ]
+            },
+            "description": "One mouse, Rs 899.00 = 89900 paise.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"product_id\": {{productId}},\n  \"quantity\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Checkout (no coupon)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/carts/{{cartId}}/checkout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts",
+                "{{cartId}}",
+                "checkout"
+              ]
+            },
+            "description": "Places the order. Body may be omitted entirely, or carry an optional coupon_code. Saves orderId.",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const o = pm.response.json();",
+                  "pm.collectionVariables.set('orderId', o.id);",
+                  "pm.test('money reconciles', () => {",
+                  "  pm.expect(o.total_paise).to.eql(o.subtotal_paise - o.discount_paise);",
+                  "  pm.expect(o.total_paise).to.be.at.least(0);",
+                  "});",
+                  "",
+                  "// Payment settles asynchronously; keep the provider reference.",
+                  "pm.collectionVariables.set('providerRef', o.payment.provider_ref);",
+                  "pm.test('starts pending with an initiated payment', () => {",
+                  "  pm.expect(o.status).to.eql('pending');",
+                  "  pm.expect(o.payment.status).to.eql('initiated');",
+                  "  pm.expect(o.user_order_number, 'unpaid orders hold no reward position').to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Settle payment (provider webhook)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/payments/webhook",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "payments",
+                "webhook"
+              ]
+            },
+            "description": "The provider confirms. THIS is where the order becomes paid and the user's reward counter advances.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider_ref\": \"{{providerRef}}\",\n  \"status\": \"success\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const o = pm.response.json();",
+                  "pm.test('order is now paid', () => pm.expect(o.status).to.eql('paid'));",
+                  "pm.test('reward position assigned on payment', () => {",
+                  "  pm.expect(o.user_order_number).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Webhook redelivery (idempotent)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/payments/webhook",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "payments",
+                "webhook"
+              ]
+            },
+            "description": "Providers retry. A redelivery must return the same state and apply nothing a second time.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider_ref\": \"{{providerRef}}\",\n  \"status\": \"success\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const o = pm.response.json();",
+                  "pm.test('still exactly the same paid order', () => {",
+                  "  pm.expect(o.status).to.eql('paid');",
+                  "  pm.expect(o.id).to.eql(pm.collectionVariables.get('orderId'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Checkout AGAIN (idempotent retry)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/carts/{{cartId}}/checkout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts",
+                "{{cartId}}",
+                "checkout"
+              ]
+            },
+            "description": "THE KEY REQUEST. Simulates a client that timed out and retried. Must return the SAME order - no second order, no second inventory decrement, no second coupon burn.",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created (a retry is not an error)', () => pm.response.to.have.status(201));",
+                  "pm.test('SAME order id as the first attempt', () => {",
+                  "  pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get('orderId'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get order",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{orderId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{orderId}}"
+              ]
+            },
+            "description": "The order with its snapshotted line items (product name and unit price as of purchase), so it stays explainable even if the catalog changes."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('line items are snapshotted', () => {",
+                  "  const it = pm.response.json().items[0];",
+                  "  pm.expect(it).to.have.property('product_name');",
+                  "  pm.expect(it).to.have.property('unit_price_paise');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "05 Reward flow (per user)",
+      "description": "Rewards are PER USER and MINTED AUTOMATICALLY: the payment that completes a user's nth paid order issues their coupon in the same transaction. There is no manual generation step.\n\nThis folder is self-driving and safe to re-run: 'Check progress' reuses an available coupon if one exists, otherwise it loops place-order-and-pay until the milestone mints one.",
+      "item": [
+        {
+          "name": "Check progress (routes the rest of this folder)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/users/{{userId}}/rewards",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "users",
+                "{{userId}}",
+                "rewards"
+              ]
+            },
+            "description": "Read-only. Decides how many orders are still needed, and skips ahead if this user already has an available coupon or a pending milestone. This is what makes the folder idempotent across runs."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const r = pm.response.json();",
+                  "const s = r.status;",
+                  "console.log(`paid orders=${s.successful_order_count} milestones=${s.milestones_reached} coupons=${s.coupons_generated}`);",
+                  "",
+                  "const available = (r.coupons || []).find(c => c.status === 'available');",
+                  "if (available) {",
+                  "  pm.collectionVariables.set('couponCode', available.code);",
+                  "  pm.collectionVariables.set('couponPercent', available.discount_percent);",
+                  "  console.log('already holding ' + available.code + ' - going straight to redeem');",
+                  "  postman.setNextRequest('Redeem coupon: create cart');",
+                  "} else {",
+                  "  pm.collectionVariables.set('ordersRemaining', s.orders_until_next_milestone);",
+                  "  console.log('need ' + s.orders_until_next_milestone + ' more paid order(s) to mint one');",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Place one order (loop step 1)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts"
+              ]
+            },
+            "description": "Opens a cart. Repeated automatically until this user reaches their next milestone.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": {{userId}}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('cartId', pm.response.json().id);",
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "... add item (loop step 2)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts/{{cartId}}/items",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts",
+                "{{cartId}}",
+                "items"
+              ]
+            },
+            "description": "One mouse: 89900 paise.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"product_id\": {{productId}},\n  \"quantity\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "... checkout (loop step 3)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/carts/{{cartId}}/checkout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts",
+                "{{cartId}}",
+                "checkout"
+              ]
+            },
+            "description": "Advances this user's reward counter by one, then loops back to step 1 while orders are still needed. Uses postman.setNextRequest, so one Runner/newman pass reaches the milestone by itself.",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const o = pm.response.json();",
+                  "pm.collectionVariables.set('providerRef', o.payment.provider_ref);",
+                  "console.log('pending order created; settling payment next');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "... pay (loop step 4)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/payments/webhook",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "payments",
+                "webhook"
+              ]
+            },
+            "description": "Settles the order so it counts toward this user's rewards, then loops back while orders are still needed.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider_ref\": \"{{providerRef}}\",\n  \"status\": \"success\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const o = pm.response.json();",
+                  "console.log('this user paid order #' + o.user_order_number);",
+                  "const left = Number(pm.collectionVariables.get('ordersRemaining') || 1) - 1;",
+                  "pm.collectionVariables.set('ordersRemaining', left);",
+                  "if (left > 0) {",
+                  "  postman.setNextRequest('Place one order (loop step 1)');",
+                  "} else {",
+                  "  postman.setNextRequest('Collect the minted coupon');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "description": "Settles the order. If this is the user's nth paid order, the coupon is minted automatically inside this same transaction."
+        },
+        {
+          "name": "Collect the minted coupon",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/users/{{userId}}/rewards",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "users",
+                "{{userId}}",
+                "rewards"
+              ]
+            },
+            "description": "The milestone payment minted a coupon automatically. Read it back and redeem it below."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const r = pm.response.json();",
+                  "const available = (r.coupons || []).find(c => c.status === 'available');",
+                  "pm.test('a coupon was minted automatically at the milestone', () => {",
+                  "  pm.expect(available, 'no available coupon after reaching the milestone').to.not.be.undefined;",
+                  "});",
+                  "if (available) {",
+                  "  pm.collectionVariables.set('couponCode', available.code);",
+                  "  pm.collectionVariables.set('couponPercent', available.discount_percent);",
+                  "  console.log('minted automatically: ' + available.code);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Redeem coupon: create cart",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts"
+              ]
+            },
+            "description": "Fresh cart to spend the coupon in.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": {{userId}}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('cartId', pm.response.json().id);",
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Redeem coupon: add item",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts/{{cartId}}/items",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts",
+                "{{cartId}}",
+                "items"
+              ]
+            },
+            "description": "One mouse: 89900 paise.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"product_id\": {{productId}},\n  \"quantity\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Redeem coupon: checkout with coupon",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts/{{cartId}}/checkout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts",
+                "{{cartId}}",
+                "checkout"
+              ]
+            },
+            "description": "Applies the coupon. With x=10: 10% of 89900 paise = 8990 paise (Rs 89.90) EXACTLY - integer paise, no float rounding. Whole-rupee storage would have silently dropped 90 paise here.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"coupon_code\": \"{{couponCode}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a coupon code was resolved', () => {",
+                  "  pm.expect(pm.collectionVariables.get('couponCode')).to.not.be.empty;",
+                  "});",
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const o = pm.response.json();",
+                  "const pct = Number(pm.collectionVariables.get('couponPercent') || 10);",
+                  "pm.test('discount is exact and floored', () => {",
+                  "  pm.expect(o.discount_paise).to.eql(Math.floor(o.subtotal_paise * pct / 100));",
+                  "});",
+                  "pm.test('total = subtotal - discount, never negative', () => {",
+                  "  pm.expect(o.total_paise).to.eql(o.subtotal_paise - o.discount_paise);",
+                  "  pm.expect(o.total_paise).to.be.at.least(0);",
+                  "});",
+                  "console.log(`subtotal=${o.subtotal_paise} discount=${o.discount_paise} total=${o.total_paise} (${pct}%)`);",
+                  "",
+                  "pm.collectionVariables.set('providerRef', o.payment.provider_ref);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Redeem coupon: pay",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/payments/webhook",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "payments",
+                "webhook"
+              ]
+            },
+            "description": "Settles the discounted order.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider_ref\": \"{{providerRef}}\",\n  \"status\": \"success\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('paid', () => pm.expect(pm.response.json().status).to.eql('paid'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Coupon is now spent (cannot be reused)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/coupons/{{couponCode}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "coupons",
+                "{{couponCode}}"
+              ]
+            },
+            "description": "Confirms the coupon is redeemed and linked to the order that consumed it."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const c = pm.response.json();",
+                  "pm.test('redeemed and linked to an order', () => {",
+                  "  pm.expect(c.status).to.eql('redeemed');",
+                  "  pm.expect(c.order_id).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "06 Admin",
+      "description": "Administrative operations. Reward coupons mint themselves at the milestone; this folder covers the manual escape hatch (goodwill grants, backfills, global promos) and reporting.",
+      "item": [
+        {
+          "name": "Grant a coupon to one user",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/coupons",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "coupons"
+              ]
+            },
+            "description": "An owned coupon: a goodwill gesture, or a backfill for a milestone passed before automatic minting. Behaves exactly like an earned one - only that user may redeem it.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": {{userId}},\n  \"discount_percent\": 25\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const c = pm.response.json();",
+                  "pm.test('owned, admin-sourced, no milestone claimed', () => {",
+                  "  pm.expect(c.global).to.be.false;",
+                  "  pm.expect(c.source).to.eql('admin');",
+                  "  pm.expect(c.milestone_number).to.be.undefined;",
+                  "  pm.expect(c.discount_percent).to.eql(25);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create a GLOBAL coupon",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/coupons",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "coupons"
+              ]
+            },
+            "description": "Omit user_id and the coupon has no owner: any customer may redeem it. Still single-use - the first redeemer consumes it. The code is randomised per run so the folder stays re-runnable.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"{{promoCode}}\",\n  \"discount_percent\": 15\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A fresh code each run, so this folder can be replayed against",
+                  "// a database that already holds earlier runs' coupons.",
+                  "pm.collectionVariables.set('promoCode', 'DIWALI' + Date.now());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const c = pm.response.json();",
+                  "pm.test('global and unowned', () => {",
+                  "  pm.expect(c.global).to.be.true;",
+                  "  pm.expect(c.user_id).to.be.undefined;",
+                  "});",
+                  "pm.collectionVariables.set('globalCode', c.code);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Duplicate code is refused",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/coupons",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "coupons"
+              ]
+            },
+            "description": "Codes are unique; the database constraint is the guard.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"{{promoCode}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409', () => pm.response.to.have.status(409));",
+                  "pm.test('CONFLICT', () => pm.expect(pm.response.json().code).to.eql('CONFLICT'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anyone can spend a global coupon: create cart",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts"
+              ]
+            },
+            "description": "Priya has earned nothing, but a global coupon is not owned.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": {{userId2}}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('promoCartId', pm.response.json().id);",
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "... add item",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts/{{promoCartId}}/items",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts",
+                "{{promoCartId}}",
+                "items"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"product_id\": {{productId}},\n  \"quantity\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "... redeem the global coupon",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts/{{promoCartId}}/checkout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts",
+                "{{promoCartId}}",
+                "checkout"
+              ]
+            },
+            "description": "15% off 89900 paise = 13485 paise, applied for a user who earned nothing.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"coupon_code\": \"{{globalCode}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const o = pm.response.json();",
+                  "pm.test('global discount applied', () => {",
+                  "  pm.expect(o.discount_paise).to.eql(Math.floor(o.subtotal_paise * 15 / 100));",
+                  "});",
+                  "pm.collectionVariables.set('providerRef', o.payment.provider_ref);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "... settle it",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/payments/webhook",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "payments",
+                "webhook"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider_ref\": \"{{providerRef}}\",\n  \"status\": \"success\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Global coupon is now spent",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/coupons/{{globalCode}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "coupons",
+                "{{globalCode}}"
+              ]
+            },
+            "description": "Single-use: the first redeemer consumed it, so nobody else can."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('redeemed', () => pm.expect(pm.response.json().status).to.eql('redeemed'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Look up a coupon by code",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/coupons/{{couponCode}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "coupons",
+                "{{couponCode}}"
+              ]
+            },
+            "description": "Owner, source, status and the order that redeemed it."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Report",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/report",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "report"
+              ]
+            },
+            "description": "ADMIN, read-only. Quantity sold per product, gross/discount/net revenue, coupon counts, total orders. Derived from orders and coupons, so it always reconciles and repeated calls never mutate state."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const r = pm.response.json();",
+                  "pm.test('net = gross - discounts', () => {",
+                  "  pm.expect(r.net_revenue_paise).to.eql(r.gross_revenue_paise - r.total_discount_paise);",
+                  "});",
+                  "pm.test('coupon counts add up', () => {",
+                  "  pm.expect(r.coupons_generated).to.eql(r.coupons_available + r.coupons_redeemed);",
+                  "});",
+                  "pm.test('per-product gross sums to total gross', () => {",
+                  "  const sum = r.by_product.reduce((t, p) => t + p.gross_revenue_paise, 0);",
+                  "  pm.expect(sum).to.eql(r.gross_revenue_paise);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Report again (must not mutate)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/report",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "report"
+              ]
+            },
+            "description": "Sanity check that the report is a pure read."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('identical to previous call', () => {",
+                  "  const prev = pm.collectionVariables.get('lastReport');",
+                  "  if (prev) pm.expect(pm.response.text()).to.eql(prev);",
+                  "});",
+                  "pm.collectionVariables.set('lastReport', pm.response.text());"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "07 Error contract",
+      "description": "Every failure returns {code, message} with a stable machine-readable code. Each request here provokes one specific code - run the folder to see the whole error contract.\n\nRun folders 04 and 05 first: the last two requests need a checked-out cart and a coupon owned by another user.",
+      "item": [
+        {
+          "name": "Setup: fresh cart for error tests",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts"
+              ]
+            },
+            "description": "The validation requests below need an OPEN cart of their own, separate from the checked-out ones.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": {{userId}}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('errCartId', pm.response.json().id);",
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 VALIDATION_ERROR - unknown product",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts/{{errCartId}}/items",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts",
+                "{{errCartId}}",
+                "items"
+              ]
+            },
+            "description": "Invalid products must not silently enter a cart.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"product_id\": 999,\n  \"quantity\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().code).to.eql('VALIDATION_ERROR'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 VALIDATION_ERROR - zero quantity",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts/{{errCartId}}/items",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts",
+                "{{errCartId}}",
+                "items"
+              ]
+            },
+            "description": "Invalid quantities must not silently enter a cart.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"product_id\": {{productId}},\n  \"quantity\": 0\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().code).to.eql('VALIDATION_ERROR'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "409 INSUFFICIENT_STOCK - more than in stock",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts/{{errCartId}}/items",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts",
+                "{{errCartId}}",
+                "items"
+              ]
+            },
+            "description": "The limited webcam has 3 units; asking for 999 is rejected up front.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"product_id\": {{limitedProductId}},\n  \"quantity\": 999\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409', () => pm.response.to.have.status(409));",
+                  "pm.test('INSUFFICIENT_STOCK', () => pm.expect(pm.response.json().code).to.eql('INSUFFICIENT_STOCK'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Add a valid item (setup for the next two)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts/{{errCartId}}/items",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts",
+                "{{errCartId}}",
+                "items"
+              ]
+            },
+            "description": "Puts one mouse in the error cart, so the duplicate-add and invalid-coupon cases below are reachable.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"product_id\": {{productId}},\n  \"quantity\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "409 CONFLICT - product already in cart",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts/{{errCartId}}/items",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts",
+                "{{errCartId}}",
+                "items"
+              ]
+            },
+            "description": "Adding a product twice is refused rather than silently incrementing, which keeps POST safe to retry. Use PUT to change quantity.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"product_id\": {{productId}},\n  \"quantity\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409', () => pm.response.to.have.status(409));",
+                  "pm.test('CONFLICT', () => pm.expect(pm.response.json().code).to.eql('CONFLICT'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 INVALID_COUPON - unknown code",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts/{{errCartId}}/checkout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts",
+                "{{errCartId}}",
+                "checkout"
+              ]
+            },
+            "description": "An unknown coupon code is distinguishable from an already-redeemed one. The cart is non-empty, so this reaches the coupon check rather than failing as an empty cart first.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"coupon_code\": \"DOES-NOT-EXIST\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('INVALID_COUPON', () => pm.expect(pm.response.json().code).to.eql('INVALID_COUPON'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "404 NOT_FOUND - unknown cart",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/carts/999999",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts",
+                "999999"
+              ]
+            },
+            "description": "Unknown ids are 404, not 500."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404', () => pm.response.to.have.status(404));",
+                  "pm.test('NOT_FOUND', () => pm.expect(pm.response.json().code).to.eql('NOT_FOUND'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: empty cart",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts"
+              ]
+            },
+            "description": "Step 1 for the empty-cart checkout below.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": {{userId}}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('emptyCartId', pm.response.json().id);",
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 VALIDATION_ERROR - checkout an empty cart",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/carts/{{emptyCartId}}/checkout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts",
+                "{{emptyCartId}}",
+                "checkout"
+              ]
+            },
+            "description": "An order for nothing is not a business event, and would wrongly advance the reward counter.",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().code).to.eql('VALIDATION_ERROR'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: cart for a different user",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts"
+              ]
+            },
+            "description": "Step 1: open a cart for {{userId2}} (Priya). Needs a coupon minted for {{userId}} - run folder 05 first.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": {{userId2}}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('otherCartId', pm.response.json().id);",
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "... add item to the other user's cart",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts/{{otherCartId}}/items",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts",
+                "{{otherCartId}}",
+                "items"
+              ]
+            },
+            "description": "Step 2.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"product_id\": {{productId}},\n  \"quantity\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "403 COUPON_NOT_OWNED - another user's coupon",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts/{{otherCartId}}/checkout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts",
+                "{{otherCartId}}",
+                "checkout"
+              ]
+            },
+            "description": "THE USER-LEVEL RULE. Priya cannot spend a coupon Aarav earned. Ownership is checked before status, so this stays 403 even once Aarav has redeemed it.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"coupon_code\": \"{{couponCode}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403', () => pm.response.to.have.status(403));",
+                  "pm.test('COUPON_NOT_OWNED', () => pm.expect(pm.response.json().code).to.eql('COUPON_NOT_OWNED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "409 CART_ALREADY_CHECKED_OUT - modify a closed cart",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts/{{cartId}}/items",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts",
+                "{{cartId}}",
+                "items"
+              ]
+            },
+            "description": "A checked-out cart is immutable. {{cartId}} was checked out by folder 05.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"product_id\": {{limitedProductId}},\n  \"quantity\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409', () => pm.response.to.have.status(409));",
+                  "pm.test('CART_ALREADY_CHECKED_OUT', () => {",
+                  "  pm.expect(pm.response.json().code).to.eql('CART_ALREADY_CHECKED_OUT');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "08 Payment failure and cancellation",
+      "description": "Payment failure and cancellation. Both must give back whatever the pending order was holding: its stock, and its coupon.",
+      "item": [
+        {
+          "name": "Create cart",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts"
+              ]
+            },
+            "description": "A cart for the failure path.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": {{userId}}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('failCartId', pm.response.json().id);",
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Add the limited-stock item",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts/{{failCartId}}/items",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts",
+                "{{failCartId}}",
+                "items"
+              ]
+            },
+            "description": "The webcam has only 3 units, so the reservation is easy to observe.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"product_id\": {{limitedProductId}},\n  \"quantity\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const stock = pm.response.json().cart.items[0].available_in_stock;",
+                  "pm.collectionVariables.set('stockBefore', stock);",
+                  "console.log('stock before reserving: ' + stock);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Checkout (reserves stock)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts/{{failCartId}}/checkout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts",
+                "{{failCartId}}",
+                "checkout"
+              ]
+            },
+            "description": "Stock leaves the shelf NOW, not at payment. That is what stops ten people paying for the last item.",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const o = pm.response.json();",
+                  "pm.collectionVariables.set('providerRef', o.payment.provider_ref);",
+                  "pm.test('pending', () => pm.expect(o.status).to.eql('pending'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Confirm stock was reserved",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/products/{{limitedProductId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "{{limitedProductId}}"
+              ]
+            },
+            "description": "Inventory has already dropped, before any payment."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const now = pm.response.json().inventory;",
+                  "const before = Number(pm.collectionVariables.get('stockBefore'));",
+                  "pm.test('stock reserved at checkout', () => pm.expect(now).to.eql(before - 1));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Payment fails",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/payments/webhook",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "payments",
+                "webhook"
+              ]
+            },
+            "description": "The provider declines. The order fails and the reservation is released.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider_ref\": \"{{providerRef}}\",\n  \"status\": \"failed\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const o = pm.response.json();",
+                  "pm.test('order failed', () => pm.expect(o.status).to.eql('failed'));",
+                  "pm.test('payment failed', () => pm.expect(o.payment.status).to.eql('failed'));",
+                  "pm.test('never counted toward rewards', () => {",
+                  "  pm.expect(o.user_order_number).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Stock came back",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/products/{{limitedProductId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "{{limitedProductId}}"
+              ]
+            },
+            "description": "The released reservation is visible immediately."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const now = pm.response.json().inventory;",
+                  "const before = Number(pm.collectionVariables.get('stockBefore'));",
+                  "pm.test('stock restored on failure', () => pm.expect(now).to.eql(before));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cancel: create cart",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts"
+              ]
+            },
+            "description": "Now the cancellation path.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": {{userId}}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('cancelCartId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cancel: add item",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts/{{cancelCartId}}/items",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts",
+                "{{cancelCartId}}",
+                "items"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"product_id\": {{limitedProductId}},\n  \"quantity\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cancel: checkout",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts/{{cancelCartId}}/checkout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts",
+                "{{cancelCartId}}",
+                "checkout"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('cancelOrderId', pm.response.json().id);",
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cancel the pending order",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{cancelOrderId}}/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{cancelOrderId}}",
+                "cancel"
+              ]
+            },
+            "description": "A pending order releases both its stock and (if used) its coupon."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('cancelled', () => pm.expect(pm.response.json().status).to.eql('cancelled'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cancelling twice is refused",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{cancelOrderId}}/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{cancelOrderId}}",
+                "cancel"
+              ]
+            },
+            "description": "A terminal order cannot be cancelled again."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409', () => pm.response.to.have.status(409));",
+                  "pm.test('ORDER_NOT_CANCELLABLE', () => {",
+                  "  pm.expect(pm.response.json().code).to.eql('ORDER_NOT_CANCELLABLE');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Stock restored after cancel",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/products/{{limitedProductId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "{{limitedProductId}}"
+              ]
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const now = pm.response.json().inventory;",
+                  "const before = Number(pm.collectionVariables.get('stockBefore'));",
+                  "pm.test('stock restored on cancel', () => pm.expect(now).to.eql(before));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
