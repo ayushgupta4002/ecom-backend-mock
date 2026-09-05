@@ -2,29 +2,10 @@
 
 Go + Postgres (GORM) checkout and rewards service.
 
-## Invariants
-
-Each one is guarded twice: in code, so the client gets a clear error, and by
-a database constraint, so a bug cannot break it silently.
-
-| # | Invariant | Enforced by |
-|---|---|---|
-| 1 | Stock is never oversold | product `FOR UPDATE` + `UPDATE … WHERE inventory >= ?` + `CHECK (inventory >= 0)` |
-| 2 | A cart checks out once, then can't be edited | cart `FOR UPDATE` + `orders.cart_id UNIQUE` |
-| 3 | Retrying a checkout changes nothing | one-way `open → checked_out`, read under the cart lock |
-| 4 | A coupon is used at most once | coupon `FOR UPDATE` inside the checkout transaction |
-| 5 | Only the owner can use an owned coupon | ownership check under that same lock |
-| 6 | One reward per user per milestone | minted under the user row lock + `UNIQUE (user_id, milestone_number)` |
-| 7 | An order explains itself forever | product name and price copied onto `order_items` |
-| 8 | An order total is never negative | integer maths + `CHECK (total_paise >= 0)`, `discount_percent <= 100` |
-| 9 | The report always adds up | it reads paid orders and coupons directly, not a separate tally |
-| 10 | A webhook delivered twice applies once | payment `FOR UPDATE` + status check, `provider_ref UNIQUE` |
-| 11 | A failed or cancelled order holds nothing | stock and coupon released in the same transaction |
-
 ## Ambiguities, and what I chose
 
 **Are rewards per user or store-wide?** The brief only says "after every nth
-successfully placed order". I chose per user — see decision 1.
+successfully placed order". I chose per user more about this in decision 1 descripption.
 
 **What if a price or stock level changes after you add to the cart?** The
 cart shows live prices and stock, but nothing is locked in. Checkout re-reads
@@ -51,6 +32,7 @@ cart 7. That is only acceptable because auth is out of scope.
 event and would push the reward counter forward.
 
 ## Material decisions
+
 ### 1. Rewards are per user, not store-wide
 
 **Problem:** My first version counted orders store-wide and let anyone spend
@@ -72,7 +54,7 @@ Contention is now per user, so two customers never block each other. The
 locking strategy itself did not change — same calls, same order, different
 rows — and the concurrency tests passed unmodified.
 
-### 2. Rewards are minted automatically, not by an admin clicking a button
+### 2. Rewards are minted automatically, not by an admin clicking a button [ DECISION ] 
 
 **This departs from the brief, on purpose.** The brief lists "generate a
 coupon when an unrewarded milestone is eligible" as an admin operation. I
@@ -94,22 +76,9 @@ Once rewards became per-user that question disappeared: the coupon belongs to
 whoever earned it, and the milestone is arithmetic. There is no judgement
 left for a human to apply.
 
-Minting happens inside the settlement transaction, right after the counter is
-incremented, so the coupon and the paid order commit together. The user row
-is already locked, so two settlements cannot both mint the same milestone;
-`UNIQUE (user_id, milestone_number)` is the backstop, and the insert uses
-`ON CONFLICT DO NOTHING` so that lowering `n` later can never fail a payment
-over a duplicate reward.
-
 `POST /admin/coupons` remains for what automation should not decide: a
 goodwill grant, a backfill, or a global promo code. That keeps the brief's
 admin operation while taking the human out of the path that needs no human.
-
-**Consequence:** Two error codes and a "pending generation" field became
-meaningless and were deleted — a milestone can no longer be reached but
-unrewarded. Coupons gained a `source` (`milestone` or `admin`), and reward
-progress counts only the earned ones, so a goodwill grant is never mistaken
-for something the customer earned.
 
 ### 3. Global coupons have no owner but are still single-use
 
@@ -151,9 +120,6 @@ forgotten) to solve a problem already solved. Reading `open → checked_out`
 under the cart's row lock is what makes it safe: without the lock, a retry
 arriving while the first request is still running would place a second order.
 
-**Trade-off:** This covers "same cart, sent twice". It does not cover a
-client that builds a brand new cart for each retry — but a client-supplied
-key would not have covered that either.
 
 ### 5. One transaction, with row locks
 
@@ -251,19 +217,7 @@ state in the database.
 
 **Choice:** (c) — and the settings are not copied into a table at all.
 
-**Why:** An operator changes the programme by editing `.env`, with no
-migration. Nothing inside a transaction needs `n` or `x`: checkout only
-increments the user's counter, and the discount applied comes from the coupon
-row, which stores its own percentage. (b) was rejected because `COUNT(*)` on
-the hot path loses the atomic assignment of "this is your Nth order".
-
-**Trade-off:** Changing `x` affects only future coupons. Invalid values stop
-the server at startup rather than quietly changing behaviour.
-
-An earlier version did mirror `n`/`x` into a table, justified by "checkout
-needs them in its transaction". That stopped being true when rewards became
-per-user, and the table survived the change without anyone rechecking whether
-it still earned its place. Removing it is the correction.
+**Why:** Earlier version at first stored in DB which i believe is a also a fine production practice but for this assignment we will be keeping it in .env only.
 
 ### 10. Never call the payment provider inside a transaction
 
